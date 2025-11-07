@@ -1,72 +1,12 @@
 "use server";
 
-import fs from "fs";
-import path from "path";
 import sgMail from "@sendgrid/mail";
-
+import prisma from "./lib/prisma";
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
 interface LoginInput {
   identifier: string;
   password: string;
-}
-
-interface Credential {
-  email: string;
-  phone: string;
-  password: string;
-  otp?: string;
-}
-
-export async function loginAction({ identifier, password }: LoginInput) {
-  const filePath = path.join(process.cwd(), "data", "credentials.json");
-  const rawData = fs.readFileSync(filePath, "utf-8");
-  const users: Credential[] = JSON.parse(rawData);
-
-  // Find the user
-  const userIndex = users.findIndex(
-    (u) =>
-      (u.email.toLowerCase() == identifier.toLowerCase() ||
-        u.phone === identifier) &&
-      u.password === password
-  );
-
-  if (userIndex === -1) {
-    return { success: false, message: "Invalid email/phone or password" };
-  }
-
-  // Generate a 6-digit OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-  // Update the user's OTP in the credentials file
-  users[userIndex].otp = otp;
-  fs.writeFileSync(filePath, JSON.stringify(users, null, 2));
-
-  // Send OTP via email
-  const userEmail = users[userIndex].email;
-  const msg = {
-    to: userEmail,
-    from: process.env.SENDGRID_FROM_EMAIL!,
-    subject: "Your OTP Code",
-    html: `<p>Your OTP code is: <strong>${otp}</strong></p>`,
-  };
-
-  try {
-    await sgMail.send(msg);
-    console.log(`OTP sent to ${userEmail}`);
-  } catch (error) {
-    console.error("Error sending OTP email:", error);
-    return { success: false, message: "Failed to send OTP" };
-  }
-
-  return { success: true, message: "OTP sent successfully", otp }; // Do not expose OTP
-}
-
-interface Credential {
-  email: string;
-  phone: string;
-  password: string;
-  otp?: string;
 }
 
 interface ForgotPasswordInput {
@@ -83,30 +23,65 @@ interface ResetPasswordInput {
   newPassword: string;
 }
 
-/**
- * Step 1: Send OTP to email if it exists
- */
-export async function forgotPasswordAction({ email }: ForgotPasswordInput) {
-  const filePath = path.join(process.cwd(), "data/credentials.json");
-  const rawData = fs.readFileSync(filePath, "utf-8");
-  const users: Credential[] = JSON.parse(rawData);
+// Helper to generate 6-digit OTP
+const generateOtp = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
 
-  const userIndex = users.findIndex(
-    (u) => u.email.toLowerCase() === email.toLowerCase()
-  );
+// ------------------ LOGIN ------------------
+export async function loginAction({ identifier, password }: LoginInput) {
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { email: { equals: identifier, mode: "insensitive" } },
+        { phone: identifier },
+      ],
+      password, // in production, hash passwords!
+    },
+  });
 
-  if (userIndex === -1) {
-    return { success: false, message: "Email not found" };
-  }
+  if (!user)
+    return { success: false, message: "Invalid email/phone or password" };
 
-  // Generate 6-digit OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  users[userIndex].otp = otp;
+  const otp = generateOtp();
 
-  fs.writeFileSync(filePath, JSON.stringify(users, null, 2));
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { otp },
+  });
 
   const msg = {
-    to: email,
+    to: user.email,
+    from: process.env.SENDGRID_FROM_EMAIL!,
+    subject: "Your OTP Code",
+    html: `<p>Your OTP code is: <strong>${otp}</strong></p>`,
+  };
+
+  try {
+    await sgMail.send(msg);
+    return { success: true, message: "OTP sent successfully" };
+  } catch (err) {
+    console.error(err);
+    return { success: false, message: "Failed to send OTP" };
+  }
+}
+
+// ------------------ FORGOT PASSWORD ------------------
+export async function forgotPasswordAction({ email }: ForgotPasswordInput) {
+  const user = await prisma.user.findUnique({
+    where: { email: email.toLowerCase() },
+  });
+
+  if (!user) return { success: false, message: "Email not found" };
+
+  const otp = generateOtp();
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { otp },
+  });
+
+  const msg = {
+    to: user.email,
     from: process.env.SENDGRID_FROM_EMAIL!,
     subject: "Password Reset OTP",
     html: `<p>Your OTP code is: <strong>${otp}</strong></p>`,
@@ -114,51 +89,43 @@ export async function forgotPasswordAction({ email }: ForgotPasswordInput) {
 
   try {
     await sgMail.send(msg);
-    console.log(`OTP sent to ${email}`);
     return { success: true, message: "OTP sent successfully" };
-  } catch (error) {
-    console.error("Error sending OTP email:", error);
+  } catch (err) {
+    console.error(err);
     return { success: false, message: "Failed to send OTP" };
   }
 }
 
-/**
- * Step 2: Verify OTP
- */
+// ------------------ VERIFY OTP ------------------
 export async function verifyOtpAction({ email, otp }: VerifyOtpInput) {
-  const filePath = path.join(process.cwd(), "data/credentials.json");
-  const rawData = fs.readFileSync(filePath, "utf-8");
-  const users: Credential[] = JSON.parse(rawData);
+  const user = await prisma.user.findUnique({
+    where: { email: email.toLowerCase() },
+  });
 
-  const userIndex = users.findIndex(
-    (u) => u.email.toLowerCase() === email.toLowerCase()
-  );
-  if (userIndex === -1) return { success: false, message: "Email not found" };
-  if (users[userIndex].otp !== otp)
-    return { success: false, message: "Invalid OTP" };
+  if (!user) return { success: false, message: "Email not found" };
+  if (user.otp !== otp) return { success: false, message: "Invalid OTP" };
 
   return { success: true };
 }
 
-/**
- * Step 3: Reset password
- */
+// ------------------ RESET PASSWORD ------------------
 export async function resetPasswordAction({
   email,
   newPassword,
 }: ResetPasswordInput) {
-  const filePath = path.join(process.cwd(), "data/credentials.json");
-  const rawData = fs.readFileSync(filePath, "utf-8");
-  const users: Credential[] = JSON.parse(rawData);
+  const user = await prisma.user.findUnique({
+    where: { email: email.toLowerCase() },
+  });
 
-  const userIndex = users.findIndex(
-    (u) => u.email.toLowerCase() === email.toLowerCase()
-  );
-  if (userIndex === -1) return { success: false, message: "Email not found" };
+  if (!user) return { success: false, message: "Email not found" };
 
-  users[userIndex].password = newPassword;
-  delete users[userIndex].otp;
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password: newPassword, // in production, hash this!
+      otp: null,
+    },
+  });
 
-  fs.writeFileSync(filePath, JSON.stringify(users, null, 2));
   return { success: true, message: "Password updated successfully" };
 }
