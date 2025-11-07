@@ -26,7 +26,8 @@ export async function loginAction({ identifier, password }: LoginInput) {
   // Find the user
   const userIndex = users.findIndex(
     (u) =>
-      (u.email === identifier || u.phone === identifier) &&
+      (u.email.toLowerCase() == identifier.toLowerCase() ||
+        u.phone === identifier) &&
       u.password === password
   );
 
@@ -92,7 +93,9 @@ export async function forgotPasswordAction({ email }: ForgotPasswordInput) {
   const rawData = fs.readFileSync(filePath, "utf-8");
   const users: Credential[] = JSON.parse(rawData);
 
-  const userIndex = users.findIndex((u) => u.email === email);
+  const userIndex = users.findIndex(
+    (u) => u.email.toLowerCase() === email.toLowerCase()
+  );
 
   if (userIndex === -1) {
     return { success: false, message: "Email not found" };
@@ -129,7 +132,9 @@ export async function verifyOtpAction({ email, otp }: VerifyOtpInput) {
   const rawData = fs.readFileSync(filePath, "utf-8");
   const users: Credential[] = JSON.parse(rawData);
 
-  const userIndex = users.findIndex((u) => u.email === email);
+  const userIndex = users.findIndex(
+    (u) => u.email.toLowerCase() === email.toLowerCase()
+  );
   if (userIndex === -1) return { success: false, message: "Email not found" };
   if (users[userIndex].otp !== otp)
     return { success: false, message: "Invalid OTP" };
@@ -148,7 +153,9 @@ export async function resetPasswordAction({
   const rawData = fs.readFileSync(filePath, "utf-8");
   const users: Credential[] = JSON.parse(rawData);
 
-  const userIndex = users.findIndex((u) => u.email === email);
+  const userIndex = users.findIndex(
+    (u) => u.email.toLowerCase() === email.toLowerCase()
+  );
   if (userIndex === -1) return { success: false, message: "Email not found" };
 
   users[userIndex].password = newPassword;
